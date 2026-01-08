@@ -12,7 +12,7 @@ $VENV_DIR = ".venv"
 $PYVER_FILE = "python-version.txt"
 
 function Ok($msg){ Write-Host "✔ $msg" }
-function Warn($msg){ Write-Host "⚠ $msg" }
+function Warn($msg){ Write-Host "[WARNING] $msg" }
 function Fail($msg){ Write-Host "[FAIL] $msg"; $script:HAS_FAIL = $true }
 
 $HAS_FAIL = $false

@@ -52,14 +52,14 @@ $piArgs = @("--noconsole","--onedir","--clean","--name",$APP_NAME)
 if (Test-Path $ICON_PATH) {
     $piArgs += @("--icon",$ICON_PATH)
 } else {
-    Write-Host "⚠ icon.ico not found. Skipping --icon."
+    Write-Host "[WARNING] icon.ico not found. Skipping --icon."
 }
 
 if (Test-Path $ASSETS_DIR) {
     # Windows에서 PyInstaller add-data 구분자는 ; (src;dst)
     $piArgs += @("--add-data","$ASSETS_DIR;$ASSETS_DIR")
 } else {
-    Write-Host "⚠ assets folder not found. Skipping --add-data."
+    Write-Host "[WARNING] assets folder not found. Skipping --add-data."
 }
 
 $piArgs += $ENTRYPOINT
