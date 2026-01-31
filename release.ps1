@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 # ========================================
 # 설정
 # ========================================
-$APP_NAME = "NanoMemory_PC_Spec_Viewer"
+$APP_NAME = "LaundryPointManager"
 $PYTHON   = "python"
 
 $ROOT_MARKERS = @(
@@ -50,10 +50,10 @@ function Get-ProjectPaths {
     )
 
     $srcDir = Join-Path $ProjectRoot "src"
+    $assetsDir = Join-Path $ProjectRoot "assets"
     $entryPoint = Join-Path $srcDir "main.py"
     $versionPy = Join-Path $srcDir "version.py"
-    $assetsDir = Join-Path $srcDir "assets"
-    $iconPath = Join-Path $assetsDir "ico_out-nano-logo_blue.ico"
+    $iconPath = Join-Path $assetsDir "icon.ico"
 
     return @{
         SrcDir    = $srcDir
@@ -80,7 +80,34 @@ function Get-AppVersion {
     return ""
 }
 
-function Ensure-PyInstaller {
+function Read-YesNo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+        [string]$Default = "Y"
+    )
+
+    $userInput = Read-Host "$Prompt [Y/N] (default: $Default)"
+    if ([string]::IsNullOrWhiteSpace($userInput)) {
+        $userInput = $Default
+    }
+    $userInput = $userInput.Trim().ToUpper()
+    return ($userInput -eq "Y")
+}
+
+function Read-BuildMode {
+    $userInput = Read-Host "Build mode: 1=onefile, 2=onedir (default: 1)"
+    if ([string]::IsNullOrWhiteSpace($userInput)) {
+        return "onefile"
+    }
+    $value = $userInput.Trim().ToLower()
+    if ($value -eq "2" -or $value -eq "onedir") {
+        return "onedir"
+    }
+    return "onefile"
+}
+
+function Test-PyInstaller {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Python
@@ -94,17 +121,19 @@ function Ensure-PyInstaller {
     }
 }
 
-function Clean-BuildArtifacts {
+function Clear-BuildArtifacts {
     Remove-Item -Recurse -Force dist, build -ErrorAction SilentlyContinue
     Get-ChildItem -Filter "*.spec" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
-function Build-Executable {
+function Invoke-ExecutableBuild {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Python,
         [Parameter(Mandatory = $true)]
         [string]$AppName,
+        [Parameter(Mandatory = $true)]
+        [string]$BuildMode,
         [Parameter(Mandatory = $true)]
         [string]$EntryPoint,
         [Parameter(Mandatory = $true)]
@@ -113,10 +142,16 @@ function Build-Executable {
         [string]$IconPath
     )
 
-    $piArgs = @("--noconsole", "--onefile", "--clean", "--name", $AppName)
+    $piArgs = @("--noconsole", "--clean", "--name", $AppName)
+    if ($BuildMode -eq "onedir") {
+        $piArgs += "--onedir"
+    } else {
+        $piArgs += "--onefile"
+    }
 
     if (Test-Path -LiteralPath $IconPath) {
         $piArgs += @("--icon", $IconPath)
+        $piArgs += @("--add-data", "$IconPath;icon.ico")
     } else {
         Write-Host "[WARNING] icon.ico not found. Skipping --icon."
     }
@@ -138,59 +173,54 @@ function Build-Executable {
     }
 }
 
-function Prepare-ReleasePackage {
+function Initialize-ReleasePackage {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
         [Parameter(Mandatory = $true)]
-        [string]$AppName
+        [string]$AppName,
+        [Parameter(Mandatory = $true)]
+        [string]$BuildMode
     )
 
     New-Item -ItemType Directory -Force release | Out-Null
     Remove-Item -Force (Join-Path $ProjectRoot "release\$AppName.exe") -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force (Join-Path $ProjectRoot "release\_internal") -ErrorAction SilentlyContinue
 
     $distExe = Join-Path $ProjectRoot "dist\$AppName.exe"
     $distDir = Join-Path $ProjectRoot "dist\$AppName"
-
-    $packageDir = Join-Path $ProjectRoot "release\_package"
-    Remove-Item -Recurse -Force $packageDir -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $packageDir | Out-Null
-
-    $readmeSource = Join-Path $ProjectRoot "README.txt"
-    if (Test-Path -LiteralPath $readmeSource) {
-        Copy-Item -LiteralPath $readmeSource -Destination (Join-Path $packageDir "README.txt") -Force
+    if ($BuildMode -eq "onefile") {
+        if ($distExe -and (Test-Path -LiteralPath $distExe)) {
+            Copy-Item -LiteralPath $distExe -Destination (Join-Path $ProjectRoot "release\$AppName.exe") -Force
+        } else {
+            Write-Host "[FAIL] PyInstaller output not found: $distExe"
+            exit 1
+        }
     } else {
-        Write-Host "[WARNING] README.txt not found. Skipping README.txt."
+        if ($distDir -and (Test-Path -LiteralPath $distDir)) {
+            Copy-Item -LiteralPath (Join-Path $distDir "$AppName.exe") -Destination (Join-Path $ProjectRoot "release\$AppName.exe") -Force
+            Copy-Item -LiteralPath (Join-Path $distDir "_internal") -Destination (Join-Path $ProjectRoot "release\_internal") -Recurse -Force
+        } else {
+            Write-Host "[FAIL] PyInstaller output not found: $distDir"
+            exit 1
+        }
     }
 
-    # ---- 핵심: Test-Path null 방어 + LiteralPath 사용 ----
-    if ($distExe -and (Test-Path -LiteralPath $distExe)) {
-        # --onefile
-        Copy-Item -LiteralPath $distExe -Destination $packageDir -Force
-    }
-    elseif ($distDir -and (Test-Path -LiteralPath $distDir)) {
-        # --onedir
-        Copy-Item -LiteralPath "$distDir\*" -Destination $packageDir -Recurse -Force
-    }
-    else {
-        Write-Host "[FAIL] PyInstaller output not found."
-        Write-Host "distExe='$distExe'"
-        Write-Host "distDir='$distDir'"
+    $releaseExe = Join-Path $ProjectRoot "release\$AppName.exe"
+    if (-not (Test-Path -LiteralPath $releaseExe)) {
+        Write-Host "[FAIL] Release exe not found after copy: $releaseExe"
         exit 1
     }
-
-    $packageExe = Join-Path $packageDir "$AppName.exe"
-    if (Test-Path -LiteralPath $packageExe) {
-        Copy-Item -LiteralPath $packageExe -Destination (Join-Path $ProjectRoot "release\$AppName.exe") -Force
-    } else {
-        Write-Host "[FAIL] Packaged exe not found: $packageExe"
-        exit 1
+    if ($BuildMode -eq "onedir") {
+        $releaseInternal = Join-Path $ProjectRoot "release\_internal"
+        if (-not (Test-Path -LiteralPath $releaseInternal)) {
+            Write-Host "[FAIL] Release _internal not found after copy: $releaseInternal"
+            exit 1
+        }
     }
-
-    return $packageDir
 }
 
-function Build-ReleaseZip {
+function Compress-ReleasePackage {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
@@ -199,20 +229,28 @@ function Build-ReleaseZip {
         [Parameter(Mandatory = $true)]
         [string]$AppVersion,
         [Parameter(Mandatory = $true)]
-        [string]$PackageDir
+        [string[]]$ZipInputs
     )
 
     $zipName = if ($AppVersion) { "$AppName`_v$AppVersion`.zip" } else { "$AppName`.zip" }
     $zipPath = Join-Path $ProjectRoot "release\$zipName"
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 
-    Compress-Archive -Path "$PackageDir\*" -DestinationPath $zipPath -Force
+    if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "release"))) {
+        New-Item -ItemType Directory -Force (Join-Path $ProjectRoot "release") | Out-Null
+    }
+    foreach ($item in $ZipInputs) {
+        if (-not (Test-Path -LiteralPath $item)) {
+            Write-Host "[FAIL] Zip input not found: $item"
+            exit 1
+        }
+    }
+
+    Compress-Archive -Path $ZipInputs -DestinationPath $zipPath -Force
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[FAIL] Compress-Archive failed."
         exit 1
     }
-
-    Remove-Item -Recurse -Force $PackageDir -ErrorAction SilentlyContinue
 
     Write-Host "=== Release build complete ==="
     Write-Host "[OK] Output: release\$AppName.exe"
@@ -221,7 +259,7 @@ function Build-ReleaseZip {
     return $zipPath
 }
 
-function Build-SourcePackage {
+function Compress-SourcePackage {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
@@ -244,28 +282,22 @@ function Build-SourcePackage {
         Copy-Item -LiteralPath $AssetsDir -Destination (Join-Path $sourceDir "assets") -Recurse -Force
     }
 
-    $coreDir = Join-Path $sourceDir "core"
-    if (Test-Path -LiteralPath (Join-Path $SrcDir "core")) {
-        New-Item -ItemType Directory -Force $coreDir | Out-Null
-        Get-ChildItem (Join-Path $SrcDir "core") -Recurse -File -Exclude "*.pyc", "*.pyo" |
-            Where-Object { $_.FullName -notmatch "\\__pycache__\\" } |
-            Copy-Item -Destination $coreDir -Force
-    }
+    $srcOutDir = Join-Path $sourceDir "src"
+    New-Item -ItemType Directory -Force $srcOutDir | Out-Null
 
-    $uiDir = Join-Path $sourceDir "ui"
-    if (Test-Path -LiteralPath (Join-Path $SrcDir "ui")) {
-        New-Item -ItemType Directory -Force $uiDir | Out-Null
-        Get-ChildItem (Join-Path $SrcDir "ui") -Recurse -File -Exclude "*.pyc", "*.pyo" |
-            Where-Object { $_.FullName -notmatch "\\__pycache__\\" } |
-            Copy-Item -Destination $uiDir -Force
-    }
+    Get-ChildItem $SrcDir -Recurse -File -Exclude "*.pyc", "*.pyo" |
+        Where-Object { $_.FullName -notmatch "\\__pycache__\\" } |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($SrcDir.Length).TrimStart("\")
+            $destPath = Join-Path $srcOutDir $relative
+            $destDir = Split-Path $destPath -Parent
+            if (-not (Test-Path -LiteralPath $destDir)) {
+                New-Item -ItemType Directory -Force $destDir | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $destPath -Force
+        }
 
-    Copy-Item -LiteralPath (Join-Path $SrcDir "controller.py") -Destination $sourceDir -Force -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath (Join-Path $SrcDir "logger.py") -Destination $sourceDir -Force -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath (Join-Path $SrcDir "main.py") -Destination $sourceDir -Force -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath (Join-Path $SrcDir "version.py") -Destination $sourceDir -Force -ErrorAction SilentlyContinue
-
-    $sourceZipName = if ($AppVersion) { "NanoMemory_PC_Spec_Viewer_source_v$AppVersion`.zip" } else { "NanoMemory_PC_Spec_Viewer_source.zip" }
+    $sourceZipName = if ($AppVersion) { "LaundryPointManager_source_v$AppVersion`.zip" } else { "LaundryPointManager_source.zip" }
     $sourceZipPath = Join-Path $ProjectRoot "release\$sourceZipName"
     if (Test-Path -LiteralPath $sourceZipPath) { Remove-Item -LiteralPath $sourceZipPath -Force }
 
@@ -305,7 +337,6 @@ $VERSION_PY  = $paths.VersionPy
 $ASSETS_DIR  = $paths.AssetsDir
 $ICON_PATH   = $paths.IconPath
 
-Write-Host "SCRIPT_PATH  = '$SCRIPT_PATH'"
 Write-Host "PROJECT_ROOT = '$PROJECT_ROOT'"
 Write-Host "SRC_DIR      = '$SRC_DIR'"
 Write-Host "ASSETS_DIR   = '$ASSETS_DIR'"
@@ -317,14 +348,42 @@ Write-Host "=== Release build start ==="
 Write-Host "Project Root: $PROJECT_ROOT"
 Write-Host "PSVersion: $($PSVersionTable.PSVersion)"
 
+$BUILD_MODE = Read-BuildMode
+$MAKE_EXE_ZIP = Read-YesNo -Prompt "Create exe zip (release\\${APP_NAME}_vX.zip)?" -Default "Y"
+$MAKE_SOURCE_ZIP = Read-YesNo -Prompt "Create source zip (release\\${APP_NAME}_source_vX.zip)?" -Default "Y"
+
 Ensure-PyInstaller -Python $PYTHON
 Clean-BuildArtifacts
-Build-Executable -Python $PYTHON -AppName $APP_NAME -EntryPoint $ENTRYPOINT -AssetsDir $ASSETS_DIR -IconPath $ICON_PATH
+Build-Executable -Python $PYTHON -AppName $APP_NAME -BuildMode $BUILD_MODE -EntryPoint $ENTRYPOINT -AssetsDir $ASSETS_DIR -IconPath $ICON_PATH
 
-$packageDir = Prepare-ReleasePackage -ProjectRoot $PROJECT_ROOT -AppName $APP_NAME
-$zipPath = Build-ReleaseZip -ProjectRoot $PROJECT_ROOT -AppName $APP_NAME -AppVersion $APP_VERSION -PackageDir $packageDir
+if ($MAKE_EXE_ZIP) {
+    $releaseExe = Join-Path $PROJECT_ROOT "release\$APP_NAME.exe"
+    if (-not (Test-Path -LiteralPath $releaseExe)) {
+        $distDir = Join-Path $PROJECT_ROOT "dist\$APP_NAME"
+        $distDirExe = Join-Path $distDir "$APP_NAME.exe"
+        $distInternal = Join-Path $distDir "_internal"
+
+        if (Test-Path -LiteralPath $distDirExe) {
+            Copy-Item -LiteralPath $distDirExe -Destination $releaseExe -Force
+        }
+
+        if (Test-Path -LiteralPath $distInternal) {
+            Copy-Item -LiteralPath $distInternal -Destination (Join-Path $PROJECT_ROOT "release\_internal") -Recurse -Force
+        }
+    }
+
+    $zipInputs = @($releaseExe)
+    if ($BUILD_MODE -eq "onedir") {
+        $zipInputs += (Join-Path $PROJECT_ROOT "release\_internal")
+    }
+    $zipPath = Build-ReleaseZip -ProjectRoot $PROJECT_ROOT -AppName $APP_NAME -AppVersion $APP_VERSION -ZipInputs $zipInputs
+} else {
+    Write-Host "[OK] Output: release\\$APP_NAME.exe"
+}
 
 # ---------------------------
 # 소스 패키지 생성
 # ---------------------------
-Build-SourcePackage -ProjectRoot $PROJECT_ROOT -SrcDir $SRC_DIR -AssetsDir $ASSETS_DIR -AppVersion $APP_VERSION
+if ($MAKE_SOURCE_ZIP) {
+    Build-SourcePackage -ProjectRoot $PROJECT_ROOT -SrcDir $SRC_DIR -AssetsDir $ASSETS_DIR -AppVersion $APP_VERSION
+}
